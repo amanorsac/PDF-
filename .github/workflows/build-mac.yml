@@ -13,12 +13,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm ci
-      - run: npm run dist:mac
+      - name: Build DMG
+        run: npm run dist:mac
         env:
-          # unsigned build; add signing secrets later if needed
+          # No signing certificate on CI; build unsigned rather than fail.
           CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: List build output
+        if: always()
+        run: ls -lh release/ || true
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: QuickPDF-macOS
           path: release/*.dmg
+          if-no-files-found: warn
