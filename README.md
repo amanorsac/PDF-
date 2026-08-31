@@ -116,3 +116,9 @@ In the extension, "Save/Export" downloads the edited PDF (browsers can't overwri
 
 Annotations are stored in PDF user-space coordinates (via pdf.js viewport transforms),
 so they survive zoom and page rotation and map 1:1 into pdf-lib when saving.
+
+## License
+
+Copyright (c) 2026 amanorsac. All rights reserved. This software is proprietary;
+see [LICENSE](LICENSE). Bundled third-party components remain under their own
+licenses — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
