@@ -158,7 +158,6 @@ async function loadPdf(filePath, arrayBuffer) {
     state.password = null;
 
     // pdf.js can decrypt; prompt for the open password when required.
-    let attempt = 0;
     const openDoc = async () => {
       const task = pdfjsLib.getDocument({
         data: state.originalBytes.slice(0),
@@ -179,7 +178,6 @@ async function loadPdf(filePath, arrayBuffer) {
       if (String(e.message).includes('cancelled')) { setStatus('Cancelled — password required'); return; }
       throw e;
     }
-    void attempt;
 
     state.pages = [];
     for (let i = 0; i < state.pdfDoc.numPages; i++) {
@@ -211,7 +209,6 @@ async function loadPdf(filePath, arrayBuffer) {
     addRecent(filePath);
     document.title = `QuickPDF Editor — ${basename(filePath)}`;
     setStatus(`${state.pages.length} page${state.pages.length > 1 ? 's' : ''}${state.formFields.length ? ` · ${state.formFields.length} form fields` : ''}`);
-    console.log(`QUICKPDF_LOADED pages=${state.pages.length} fields=${state.formFields.length}`);
   } catch (err) {
     console.error(err);
     setStatus(`Failed to open: ${err.message}`);
@@ -708,7 +705,6 @@ function attachPageEvents(pageIdx) {
       } else if (anno.type === 'rect' || anno.type === 'ellipse') {
         anno.x1 = o.x1 + dx; anno.y1 = o.y1 + dy;
         anno.x2 = o.x2 + dx; anno.y2 = o.y2 + dy;
-        if (o.dataB64) imageCache.set(anno, imageCache.get(dragging.anno));
       } else {
         anno.points = o.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy }));
       }
@@ -964,6 +960,17 @@ function redo() {
 
 const sanitize = (t) => t.replace(/[^\x20-\x7E]/g, '?');
 
+const APP_NAME = 'QuickPDF Editor';
+
+// Saved files otherwise advertise the PDF library as their authoring tool.
+function stampMetadata(doc) {
+  try {
+    doc.setProducer(APP_NAME);
+    doc.setCreator(APP_NAME);
+    doc.setModificationDate(new Date());
+  } catch (e) { console.warn('Metadata stamp failed:', e.message); }
+}
+
 // True when pages were reordered, deleted, or merged in — the only cases that
 // force a full document rebuild.
 function structureChanged() {
@@ -1069,6 +1076,7 @@ async function buildInPlace() {
   if (state.flattenForms && state.formFields.length) {
     try { doc.getForm().flatten(); } catch (e) { console.warn('Flatten failed:', e.message); }
   }
+  stampMetadata(doc);
   return doc.save();
 }
 
@@ -1114,6 +1122,7 @@ async function buildRasterized() {
   } finally {
     await doc.destroy();
   }
+  stampMetadata(outDoc);
   return outDoc.save();
 }
 
@@ -1144,6 +1153,7 @@ async function buildRebuilt() {
     }
     await drawAnnotationsOnPage(outDoc, page, entry, font);
   }
+  stampMetadata(outDoc);
   return outDoc.save();
 }
 
@@ -1196,6 +1206,7 @@ async function mergePdfs() {
       const pages = await outDoc.copyPages(doc, doc.getPageIndices());
       pages.forEach(p => outDoc.addPage(p));
     }
+    stampMetadata(outDoc);
     const bytes = await outDoc.save();
     const savedPath = await window.api.savePdfAs('merged.pdf', bytes);
     if (savedPath) {
@@ -1377,6 +1388,7 @@ function wireUp() {
 
   // menu / open-with
   window.api.onOpenPath(async ({ filePath, data, selftest }) => {
+    if (selftest) enableTestHooks();
     await loadPdf(filePath, data);
     if (selftest) runSelfTest();
   });
@@ -1393,8 +1405,10 @@ function wireUp() {
 wireUp();
 setStatus('Ready');
 
-// Debug/automation hook: lets tests drive the save pipeline directly.
-window.__quickpdf = { state, buildPdfBytes, loadPdf, structureChanged, deleteCurrentPage };
+// Attached only under --selftest so release builds expose no internals.
+function enableTestHooks() {
+  window.__quickpdf = { state, buildPdfBytes, loadPdf, structureChanged, deleteCurrentPage };
+}
 
 // Exercises all three save paths against the loaded document. Run with --selftest.
 async function runSelfTest() {

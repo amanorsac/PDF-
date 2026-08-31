@@ -16,7 +16,11 @@ const copies = [
   ['node_modules/pdf-lib/dist/pdf-lib.min.js', 'vendor/pdf-lib.min.js']
 ];
 for (const [from, to] of copies) {
-  fs.copyFileSync(path.join(root, from), path.join(out, to));
+  // Drop the sourceMappingURL trailer: the .map files are not shipped, and the
+  // reference alone would un-minify these bundles for anyone who fetched them.
+  const src = fs.readFileSync(path.join(root, from), 'utf8')
+    .replace(/^\/\/# sourceMappingURL=.*$/gm, '');
+  fs.writeFileSync(path.join(out, to), src);
 }
 
 // ---- app.js with adjusted paths ----
