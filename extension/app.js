@@ -23,6 +23,10 @@ const state = {
   pages: [],
   formFields: [],        // { name, type, srcPageIndex, rect:{x,y,w,h}, value, options }
   formMode: false,
+  password: null,        // open password, if the user supplied one
+  flattenForms: false,   // opt-in; off keeps fields fillable (best for gov forms)
+  docFlags: { encrypted: false, hasXfa: false, hasSignatures: false, pdfLibUsable: true },
+  originalOrder: [],     // srcIndex order at load time, to detect structure changes
   watermark: null,       // { text }
   currentPage: 0,
   zoom: 1.0,
@@ -73,16 +77,115 @@ function addRecent(filePath) {
 
 // ---------------- Loading ----------------
 
+function askPassword(retry) {
+  return new Promise((resolve) => {
+    const modal = $('pw-modal');
+    const input = $('pw-input');
+    input.value = '';
+    $('pw-msg').textContent = retry
+      ? 'Incorrect password. Please try again.'
+      : 'Enter the open password to view and edit this document.';
+    modal.classList.remove('hidden');
+    setTimeout(() => input.focus(), 0);
+
+    const done = (val) => {
+      modal.classList.add('hidden');
+      $('pw-ok').removeEventListener('click', ok);
+      $('pw-cancel').removeEventListener('click', cancel);
+      input.removeEventListener('keydown', key);
+      resolve(val);
+    };
+    const ok = () => done(input.value || '');
+    const cancel = () => done(null);
+    const key = (e) => {
+      if (e.key === 'Enter') ok();
+      if (e.key === 'Escape') cancel();
+      e.stopPropagation();
+    };
+    $('pw-ok').addEventListener('click', ok);
+    $('pw-cancel').addEventListener('click', cancel);
+    input.addEventListener('keydown', key);
+  });
+}
+
+function showBanner(text, danger = false) {
+  const b = $('doc-banner');
+  $('doc-banner-text').textContent = text;
+  b.classList.toggle('danger', danger);
+  b.classList.remove('hidden');
+}
+function hideBanner() { $('doc-banner').classList.add('hidden'); }
+
+// Inspect the document for features our save pipeline must respect.
+async function detectDocFlags() {
+  const flags = { encrypted: false, hasXfa: false, hasSignatures: false, pdfLibUsable: true };
+  try {
+    const { PDFName } = window.PDFLib;
+    const doc = await PDFDocument.load(state.originalBytes, {
+      ignoreEncryption: true,
+      ...(state.password ? { password: state.password } : {})
+    });
+    flags.encrypted = !!doc.isEncrypted;
+    const acro = doc.catalog.lookup(PDFName.of('AcroForm'));
+    if (acro && acro.get) {
+      flags.hasXfa = !!acro.get(PDFName.of('XFA'));
+      const sigFlags = acro.get(PDFName.of('SigFlags'));
+      if (sigFlags && typeof sigFlags.asNumber === 'function' && sigFlags.asNumber() > 0) {
+        flags.hasSignatures = true;
+      }
+    }
+    // pdf-lib cannot decrypt: an encrypted doc would serialize to garbage.
+    flags.pdfLibUsable = !flags.encrypted;
+  } catch (e) {
+    console.warn('Flag detection failed:', e.message);
+    flags.pdfLibUsable = false;
+  }
+  state.docFlags = flags;
+
+  const notes = [];
+  if (flags.hasXfa) notes.push('This is an XFA (dynamic) form — common in IRS/USCIS filings. Field values can be filled and saved as a flattened copy, but the dynamic form layer cannot be preserved.');
+  if (flags.hasSignatures) notes.push('This document contains digital signature fields — saving will invalidate existing signatures.');
+  if (flags.encrypted) notes.push('This PDF is encrypted. Edits will be saved as an unlocked, flattened copy of the pages.');
+  if (notes.length) showBanner(notes.join('  •  '), flags.hasXfa || flags.encrypted);
+  else hideBanner();
+}
+
 async function loadPdf(filePath, arrayBuffer) {
   setStatus('Loading…');
   try {
     state.originalBytes = arrayBuffer.slice(0);
     state.filePath = filePath;
-    state.pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+    state.password = null;
+
+    // pdf.js can decrypt; prompt for the open password when required.
+    let attempt = 0;
+    const openDoc = async () => {
+      const task = pdfjsLib.getDocument({
+        data: state.originalBytes.slice(0),
+        ...(state.password ? { password: state.password } : {})
+      });
+      task.onPassword = async (updatePassword, reason) => {
+        const pw = await askPassword(reason === pdfjsLib.PasswordResponses.INCORRECT_PASSWORD);
+        if (pw === null) { task.destroy(); throw new Error('cancelled'); }
+        state.password = pw;
+        updatePassword(pw);
+      };
+      return task.promise;
+    };
+
+    try {
+      state.pdfDoc = await openDoc();
+    } catch (e) {
+      if (String(e.message).includes('cancelled')) { setStatus('Cancelled — password required'); return; }
+      throw e;
+    }
+    void attempt;
+
     state.pages = [];
     for (let i = 0; i < state.pdfDoc.numPages; i++) {
       state.pages.push({ srcIndex: i, extraRotation: 0, annotations: [] });
     }
+    state.originalOrder = state.pages.map(p => p.srcIndex);
     state.currentPage = 0;
     state.selected = null;
     state.undoStack = [];
@@ -90,6 +193,8 @@ async function loadPdf(filePath, arrayBuffer) {
     state.watermark = null;
     state.formMode = false;
     state.dirty = false;
+
+    await detectDocFlags();
 
     state.fileInfo = null;
     if (filePath && window.api.statFile) {
@@ -118,7 +223,10 @@ async function loadPdf(filePath, arrayBuffer) {
 async function loadFormFields() {
   state.formFields = [];
   try {
-    const doc = await PDFDocument.load(state.originalBytes, { ignoreEncryption: true });
+    const doc = await PDFDocument.load(state.originalBytes, {
+      ignoreEncryption: true,
+      ...(state.password ? { password: state.password } : {})
+    });
     const form = doc.getForm();
     const fields = form.getFields();
     if (!fields.length) return;
@@ -854,113 +962,216 @@ function redo() {
 
 // ---------------- Saving ----------------
 
-async function buildPdfBytes() {
-  const srcDoc = await PDFDocument.load(state.originalBytes, { ignoreEncryption: true });
+const sanitize = (t) => t.replace(/[^\x20-\x7E]/g, '?');
 
-  // 1) Fill changed form fields on the source doc, then flatten so the values
-  //    are baked into page content (copyPages does not carry the AcroForm dict).
-  const formChanged = state.formFields.some(f => f.value !== f.initial);
-  if (formChanged) {
-    try {
-      const form = srcDoc.getForm();
-      for (const f of state.formFields) {
-        try {
-          if (f.type === 'text') form.getTextField(f.name).setText(f.value || '');
-          else if (f.type === 'checkbox') { const cb = form.getCheckBox(f.name); f.value ? cb.check() : cb.uncheck(); }
-          else if (f.type === 'dropdown' && f.value) form.getDropdown(f.name).select(f.value);
-        } catch (e) { console.warn(`Field ${f.name}:`, e.message); }
+// True when pages were reordered, deleted, or merged in — the only cases that
+// force a full document rebuild.
+function structureChanged() {
+  const now = state.pages.map(p => p.srcIndex);
+  return now.length !== state.originalOrder.length ||
+         now.some((v, i) => v !== state.originalOrder[i]);
+}
+
+function applyFormValues(doc) {
+  if (!state.formFields.some(f => f.value !== f.initial)) return false;
+  try {
+    const form = doc.getForm();
+    for (const f of state.formFields) {
+      try {
+        if (f.type === 'text') form.getTextField(f.name).setText(f.value || '');
+        else if (f.type === 'checkbox') { const cb = form.getCheckBox(f.name); f.value ? cb.check() : cb.uncheck(); }
+        else if (f.type === 'dropdown' && f.value) form.getDropdown(f.name).select(f.value);
+      } catch (e) { console.warn(`Field ${f.name}:`, e.message); }
+    }
+    form.updateFieldAppearances();
+    return true;
+  } catch (e) {
+    console.warn('Form fill failed:', e.message);
+    return false;
+  }
+}
+
+async function drawAnnotationsOnPage(doc, page, entry, font) {
+  for (const a of entry.annotations) {
+    const c = a.color ? hexToRgb(a.color) : { r: 0, g: 0, b: 0 };
+    const color = rgb(c.r / 255, c.g / 255, c.b / 255);
+    if (a.type === 'text') {
+      let text = a.text;
+      try { font.widthOfTextAtSize(text, a.size); } catch { text = sanitize(text); }
+      try { page.drawText(text, { x: a.x, y: a.y, size: a.size, font, color }); }
+      catch { page.drawText(sanitize(text), { x: a.x, y: a.y, size: a.size, font, color }); }
+    } else if (a.type === 'rect') {
+      page.drawRectangle({
+        x: Math.min(a.x1, a.x2), y: Math.min(a.y1, a.y2),
+        width: Math.abs(a.x2 - a.x1), height: Math.abs(a.y2 - a.y1),
+        borderColor: color, borderWidth: a.width
+      });
+    } else if (a.type === 'ellipse') {
+      page.drawEllipse({
+        x: (a.x1 + a.x2) / 2, y: (a.y1 + a.y2) / 2,
+        xScale: Math.abs(a.x2 - a.x1) / 2, yScale: Math.abs(a.y2 - a.y1) / 2,
+        borderColor: color, borderWidth: a.width
+      });
+    } else if (a.type === 'image') {
+      try {
+        const img = a.fmt === 'png' ? await doc.embedPng(a.dataB64) : await doc.embedJpg(a.dataB64);
+        page.drawImage(img, { x: a.x, y: a.y, width: a.w, height: a.h });
+      } catch (e) { console.warn('Image embed failed:', e.message); }
+    } else {
+      for (let k = 0; k < a.points.length - 1; k++) {
+        page.drawLine({
+          start: a.points[k], end: a.points[k + 1],
+          thickness: a.width, color, opacity: a.opacity, lineCap: 1
+        });
       }
-      form.updateFieldAppearances();
-      form.flatten();
-    } catch (e) { console.warn('Form fill failed:', e.message); }
+    }
+  }
+
+  if (state.watermark) {
+    const { width: pw, height: ph } = page.getSize();
+    const size = 48;
+    const tw = font.widthOfTextAtSize(sanitize(state.watermark.text), size);
+    const cos = Math.cos(Math.PI / 4), sin = Math.sin(Math.PI / 4);
+    page.drawText(sanitize(state.watermark.text), {
+      x: pw / 2 - (tw / 2) * cos,
+      y: ph / 2 - (tw / 2) * sin,
+      size, font, color: rgb(0.4, 0.4, 0.4),
+      opacity: 0.14, rotate: degrees(45)
+    });
+  }
+}
+
+/**
+ * PATH 1 — In-place edit. Loads the original document and modifies it directly,
+ * so the AcroForm stays live, tags/structure survive, and nothing is rebuilt.
+ * Used whenever page order is untouched. This is what makes government forms safe.
+ */
+async function buildInPlace() {
+  const doc = await PDFDocument.load(state.originalBytes, {
+    ignoreEncryption: true,
+    updateMetadata: false,
+    ...(state.password ? { password: state.password } : {})
+  });
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  applyFormValues(doc);
+
+  const pages = doc.getPages();
+  for (let i = 0; i < state.pages.length; i++) {
+    const entry = state.pages[i];
+    const page = pages[entry.srcIndex];
+    if (!page) continue;
+    if (entry.extraRotation) {
+      page.setRotation(degrees(((page.getRotation().angle || 0) + entry.extraRotation) % 360));
+    }
+    await drawAnnotationsOnPage(doc, page, entry, font);
+  }
+
+  if (state.flattenForms && state.formFields.length) {
+    try { doc.getForm().flatten(); } catch (e) { console.warn('Flatten failed:', e.message); }
+  }
+  return doc.save();
+}
+
+/**
+ * PATH 3 — Rasterize. For encrypted documents, which pdf-lib cannot decrypt and
+ * would serialize to garbage. Renders each page through pdf.js (which CAN decrypt)
+ * and assembles an unlocked image-based PDF. Lossy, but produces a usable file.
+ */
+async function buildRasterized() {
+  const outDoc = await PDFDocument.create();
+  const font = await outDoc.embedFont(StandardFonts.Helvetica);
+
+  // Render from a private document instance: the page proxies backing the
+  // on-screen canvases already own render tasks, and reusing them deadlocks.
+  const task = pdfjsLib.getDocument({
+    data: state.originalBytes.slice(0),
+    ...(state.password ? { password: state.password } : {})
+  });
+  const doc = await task.promise;
+
+  try {
+  for (let i = 0; i < state.pages.length; i++) {
+    const entry = state.pages[i];
+    const page = await doc.getPage(entry.srcIndex + 1);
+    const viewport = page.getViewport({
+      scale: 2,
+      rotation: (page.rotate + entry.extraRotation) % 360
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+
+    const b64 = canvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+    const img = await outDoc.embedJpg(b64);
+    // Lay the raster out at the page's own point size, so annotation
+    // coordinates (stored in PDF space) still land correctly.
+    const unscaled = page.getViewport({ scale: 1, rotation: (page.rotate + entry.extraRotation) % 360 });
+    const outPage = outDoc.addPage([unscaled.width, unscaled.height]);
+    outPage.drawImage(img, { x: 0, y: 0, width: unscaled.width, height: unscaled.height });
+    await drawAnnotationsOnPage(outDoc, outPage, entry, font);
+  }
+  } finally {
+    await doc.destroy();
+  }
+  return outDoc.save();
+}
+
+/**
+ * PATH 2 — Rebuild. Only when pages were reordered or deleted. copyPages cannot
+ * carry the AcroForm dictionary, so form values must be flattened to survive.
+ */
+async function buildRebuilt() {
+  const srcDoc = await PDFDocument.load(state.originalBytes, {
+    ignoreEncryption: true,
+    ...(state.password ? { password: state.password } : {})
+  });
+
+  if (applyFormValues(srcDoc) || state.formFields.length) {
+    try { srcDoc.getForm().flatten(); } catch (e) { console.warn('Flatten failed:', e.message); }
   }
 
   const outDoc = await PDFDocument.create();
   const font = await outDoc.embedFont(StandardFonts.Helvetica);
-
-  const indices = state.pages.map(p => p.srcIndex);
-  const copied = await outDoc.copyPages(srcDoc, indices);
-
-  const sanitize = (t) => t.replace(/[^\x20-\x7E]/g, '?');
+  const copied = await outDoc.copyPages(srcDoc, state.pages.map(p => p.srcIndex));
 
   for (let i = 0; i < copied.length; i++) {
     const page = copied[i];
     const entry = state.pages[i];
     outDoc.addPage(page);
-
     if (entry.extraRotation) {
-      const current = page.getRotation().angle || 0;
-      page.setRotation(degrees((current + entry.extraRotation) % 360));
+      page.setRotation(degrees(((page.getRotation().angle || 0) + entry.extraRotation) % 360));
     }
-
-    for (const a of entry.annotations) {
-      const c = a.color ? hexToRgb(a.color) : { r: 0, g: 0, b: 0 };
-      const color = rgb(c.r / 255, c.g / 255, c.b / 255);
-      if (a.type === 'text') {
-        let text = a.text;
-        try { font.widthOfTextAtSize(text, a.size); } catch { text = sanitize(text); }
-        try { page.drawText(text, { x: a.x, y: a.y, size: a.size, font, color }); }
-        catch { page.drawText(sanitize(text), { x: a.x, y: a.y, size: a.size, font, color }); }
-      } else if (a.type === 'rect') {
-        page.drawRectangle({
-          x: Math.min(a.x1, a.x2), y: Math.min(a.y1, a.y2),
-          width: Math.abs(a.x2 - a.x1), height: Math.abs(a.y2 - a.y1),
-          borderColor: color, borderWidth: a.width
-        });
-      } else if (a.type === 'ellipse') {
-        page.drawEllipse({
-          x: (a.x1 + a.x2) / 2, y: (a.y1 + a.y2) / 2,
-          xScale: Math.abs(a.x2 - a.x1) / 2, yScale: Math.abs(a.y2 - a.y1) / 2,
-          borderColor: color, borderWidth: a.width
-        });
-      } else if (a.type === 'image') {
-        try {
-          const img = a.fmt === 'png'
-            ? await outDoc.embedPng(a.dataB64)
-            : await outDoc.embedJpg(a.dataB64);
-          page.drawImage(img, { x: a.x, y: a.y, width: a.w, height: a.h });
-        } catch (e) { console.warn('Image embed failed:', e.message); }
-      } else {
-        for (let k = 0; k < a.points.length - 1; k++) {
-          page.drawLine({
-            start: a.points[k], end: a.points[k + 1],
-            thickness: a.width, color, opacity: a.opacity, lineCap: 1
-          });
-        }
-      }
-    }
-
-    if (state.watermark) {
-      const { width: pw, height: ph } = page.getSize();
-      const size = 48;
-      const tw = font.widthOfTextAtSize(sanitize(state.watermark.text), size);
-      const cos = Math.cos(Math.PI / 4), sin = Math.sin(Math.PI / 4);
-      page.drawText(sanitize(state.watermark.text), {
-        x: pw / 2 - (tw / 2) * cos,
-        y: ph / 2 - (tw / 2) * sin,
-        size, font, color: rgb(0.4, 0.4, 0.4),
-        opacity: 0.14, rotate: degrees(45)
-      });
-    }
+    await drawAnnotationsOnPage(outDoc, page, entry, font);
   }
-
   return outDoc.save();
+}
+
+async function buildPdfBytes() {
+  if (!state.docFlags.pdfLibUsable) return { bytes: await buildRasterized(), mode: 'rasterized' };
+  if (structureChanged()) return { bytes: await buildRebuilt(), mode: 'rebuilt' };
+  return { bytes: await buildInPlace(), mode: 'in-place' };
 }
 
 async function save(as = false) {
   if (!state.originalBytes) return;
   setStatus('Saving…');
   try {
-    const bytes = await buildPdfBytes();
+    const { bytes, mode } = await buildPdfBytes();
+    const note = {
+      'in-place': 'structure preserved',
+      'rebuilt': 'pages rebuilt, form flattened',
+      'rasterized': 'unlocked flattened copy'
+    }[mode];
     if (as || !state.filePath) {
       const suggested = state.filePath ? basename(state.filePath).replace(/\.pdf$/i, '-edited.pdf') : 'document.pdf';
       const savedPath = await window.api.savePdfAs(suggested, bytes);
       if (!savedPath) { setStatus(''); return; }
-      setStatus(`Saved: ${basename(savedPath)}`);
+      setStatus(`Saved: ${basename(savedPath)} — ${note}`);
       addRecent(savedPath);
     } else {
       await window.api.writeFile(state.filePath, bytes);
-      setStatus(`Saved: ${basename(state.filePath)}`);
+      setStatus(`Saved: ${basename(state.filePath)} — ${note}`);
     }
     state.dirty = false;
   } catch (err) {
@@ -1089,6 +1300,8 @@ function wireUp() {
   $('btn-sign').addEventListener('click', openSignatureModal);
   $('btn-sign2').addEventListener('click', openSignatureModal);
   $('btn-fill-form').addEventListener('click', () => toggleFormMode());
+  $('chk-flatten').addEventListener('change', (e) => { state.flattenForms = e.target.checked; markDirty(); });
+  $('doc-banner-close').addEventListener('click', hideBanner);
   $('btn-watermark').addEventListener('click', addWatermark);
   $('btn-watermark-remove').addEventListener('click', removeWatermark);
 
@@ -1163,7 +1376,10 @@ function wireUp() {
   }, { passive: true });
 
   // menu / open-with
-  window.api.onOpenPath(async ({ filePath, data }) => { await loadPdf(filePath, data); });
+  window.api.onOpenPath(async ({ filePath, data, selftest }) => {
+    await loadPdf(filePath, data);
+    if (selftest) runSelfTest();
+  });
   window.api.onMenu('menu:open', openViaDialog);
   window.api.onMenu('menu:save', () => save(false));
   window.api.onMenu('menu:saveas', () => save(true));
@@ -1176,3 +1392,49 @@ function wireUp() {
 
 wireUp();
 setStatus('Ready');
+
+// Debug/automation hook: lets tests drive the save pipeline directly.
+window.__quickpdf = { state, buildPdfBytes, loadPdf, structureChanged, deleteCurrentPage };
+
+// Exercises all three save paths against the loaded document. Run with --selftest.
+async function runSelfTest() {
+  const line = (m) => console.log('SELFTEST ' + m);
+  const reload = async (d) => PDFDocument.load(d);
+  try {
+    // Path 1 — in-place: form values written, fields must stay live
+    if (state.formFields.length) {
+      state.formFields[0].value = 'Selftest Value';
+      if (state.formFields[1]) state.formFields[1].value = true;
+    }
+    let t = performance.now();
+    let r = await buildPdfBytes();
+    let d = await reload(r.bytes);
+    line(`path1 mode=${r.mode} pages=${d.getPageCount()} liveFields=${d.getForm().getFields().length} ` +
+         `value="${state.formFields.length ? d.getForm().getTextField(state.formFields[0].name).getText() : 'n/a'}" ` +
+         `ms=${Math.round(performance.now() - t)}`);
+
+    // Path 2 — rebuild: delete a page so structure changes
+    const keep = JSON.parse(JSON.stringify(state.pages));
+    state.pages.splice(1, 1);
+    t = performance.now();
+    r = await buildPdfBytes();
+    d = await reload(r.bytes);
+    line(`path2 mode=${r.mode} pages=${d.getPageCount()} liveFields=${d.getForm().getFields().length} ms=${Math.round(performance.now() - t)}`);
+    state.pages = keep;
+
+    // Path 3 — rasterize: simulate an encrypted document
+    state.docFlags.pdfLibUsable = false;
+    state.watermark = { text: 'COPY' };
+    t = performance.now();
+    r = await buildPdfBytes();
+    d = await reload(r.bytes);
+    const p0 = d.getPage(0);
+    line(`path3 mode=${r.mode} pages=${d.getPageCount()} size=${Math.round(p0.getWidth())}x${Math.round(p0.getHeight())} ` +
+         `kb=${Math.round(r.bytes.length / 1024)} ms=${Math.round(performance.now() - t)}`);
+    state.docFlags.pdfLibUsable = true;
+    state.watermark = null;
+    line('ALL PASS');
+  } catch (e) {
+    line('FAIL ' + e.message);
+  }
+}

@@ -24,6 +24,45 @@ Shortcuts: `V` select · `T` text · `D` draw · `H` highlight · `Ctrl+Z/Y` und
 > cryptographic (certificate-based) digital signature — that requires a signing
 > certificate (PKCS#12) and is on the roadmap.
 
+## Save fidelity — how your document is preserved
+
+Most PDF tools rebuild the whole document on save, which quietly destroys form
+structure. QuickPDF picks the least destructive path it can:
+
+| Path | When it's used | What survives |
+|---|---|---|
+| **In-place** (default) | Page order unchanged | Everything — the AcroForm stays **live and fillable**, tags/accessibility structure, metadata, bookmarks |
+| **Rebuild** | Pages reordered or deleted | Page content + annotations. `copyPages` cannot carry the AcroForm dictionary, so form values are flattened (baked in) to avoid losing them |
+| **Rasterize** | Encrypted documents | Pages become images plus your annotations. Lossy but produces a working, unlocked file — pdf-lib cannot decrypt, so this is the only safe option |
+
+The status bar reports which path was used after every save.
+
+**Flatten on save** (Form tab) is **off by default**, so filled forms stay editable
+for the next person — the right behavior for government and shared forms. Turn it
+on to permanently lock values in.
+
+### Working with government / official documents
+
+- **Standard AcroForm PDFs** (most federal and state forms): fully supported. Fill,
+  save, and the form remains a real fillable form.
+- **XFA / dynamic forms** (some IRS, USCIS, DoD filings): detected on open and a
+  warning banner appears. Values can be filled and saved as a flattened copy, but the
+  dynamic XFA layer cannot be preserved — no JS PDF library supports it. Use the
+  official Adobe-based workflow when the agency requires a live XFA submission.
+- **Already-signed documents**: detected on open, with a warning that saving will
+  invalidate existing digital signatures. This is inherent to modifying a signed PDF,
+  not specific to this app.
+- **Tagged / Section 508 documents**: preserved on the in-place path; avoid page
+  reordering if accessibility structure matters.
+
+### Password-protected PDFs
+
+If a PDF requires an open password, QuickPDF prompts for it and unlocks the document
+for viewing and editing once you supply it (pdf.js handles the decryption). Because
+pdf-lib cannot re-encrypt or write encrypted content streams, saving produces an
+**unlocked** copy via the rasterize path — this is a decryption limitation, not a
+bypass. QuickPDF does not attempt to recover or crack unknown passwords.
+
 ## Development
 
 ```bash

@@ -61,6 +61,10 @@
     <div class="ribbon-row hidden" id="ribbon-form">
       <button id="btn-fill-form" class="rtool" disabled><span class="ri">📝</span> Fill Form Fields</button>
       <button id="btn-sign2" class="rtool" disabled><span class="ri">✒️</span> Sign Document</button>
+      <div class="ribbon-sep"></div>
+      <label class="rlabel" title="Off = fields stay editable for the next person (best for government forms). On = values are permanently baked in.">
+        <input type="checkbox" id="chk-flatten" /> Flatten on save
+      </label>
       <span id="form-info" class="rlabel"></span>
     </div>
 
@@ -75,6 +79,12 @@
       <button id="btn-save" class="btn-secondary" disabled title="Save (Ctrl+S)">Save</button>
       <button id="btn-export" class="btn-primary" disabled title="Save As (Ctrl+Shift+S)">Export</button>
     </div>
+  </div>
+
+  <div id="doc-banner" class="hidden">
+    <span id="doc-banner-icon">⚠️</span>
+    <span id="doc-banner-text"></span>
+    <button id="doc-banner-close" class="icon-btn">✕</button>
   </div>
 
   <div id="main">
@@ -140,6 +150,20 @@
         <button class="rp-btn" id="rp-merge">🧩 Merge PDFs</button>
       </div>
     </aside>
+  </div>
+
+  <!-- Password modal -->
+  <div id="pw-modal" class="modal hidden">
+    <div class="modal-box" style="width:400px">
+      <div class="modal-title">🔒 This PDF is password-protected</div>
+      <p id="pw-msg" class="modal-note">Enter the open password to view and edit this document.</p>
+      <input type="password" id="pw-input" class="modal-input" placeholder="Password" />
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <button id="pw-cancel" class="btn-secondary">Cancel</button>
+        <button id="pw-ok" class="btn-primary">Unlock</button>
+      </div>
+    </div>
   </div>
 
   <!-- Signature modal -->

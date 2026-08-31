@@ -30,7 +30,8 @@ function createWindow() {
       const data = fs.readFileSync(pdfArg);
       mainWindow.webContents.send('file:openpath', {
         filePath: path.resolve(pdfArg),
-        data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+        data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+        selftest: process.argv.includes('--selftest')
       });
     }
   });
