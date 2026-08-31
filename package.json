@@ -1,0 +1,49 @@
+{
+  "name": "quickpdf",
+  "productName": "QuickPDF Editor",
+  "version": "1.0.0",
+  "description": "Fast, simple PDF editor for Windows and macOS",
+  "main": "src/main.js",
+  "author": "amanorsac",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.8.69"
+  },
+  "build": {
+    "appId": "com.amanorsac.quickpdf",
+    "productName": "QuickPDF Editor",
+    "files": [
+      "src/**/*",
+      "node_modules/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": true
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "category": "public.app-category.productivity"
+    }
+  }
+}

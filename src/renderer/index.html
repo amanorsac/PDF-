@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>QuickPDF Editor</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="toolbar">
+    <div class="tb-group">
+      <button id="btn-open" title="Open PDF (Ctrl+O)">📂 Open</button>
+      <button id="btn-save" title="Save (Ctrl+S)" disabled>💾 Save</button>
+      <button id="btn-saveas" title="Save As (Ctrl+Shift+S)" disabled>Save As…</button>
+      <button id="btn-merge" title="Merge multiple PDFs into one">🧩 Merge</button>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group" id="tool-group">
+      <button id="tool-select" class="tool active" title="Select / move annotations">🖱 Select</button>
+      <button id="tool-text" class="tool" title="Click on page to add text">🅣 Text</button>
+      <button id="tool-draw" class="tool" title="Freehand pen">✏️ Draw</button>
+      <button id="tool-highlight" class="tool" title="Highlighter">🖍 Highlight</button>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group">
+      <label class="tb-label">Color <input type="color" id="color-picker" value="#e03131" /></label>
+      <label class="tb-label">Size
+        <select id="size-picker">
+          <option value="10">10</option>
+          <option value="12">12</option>
+          <option value="14">14</option>
+          <option value="16" selected>16</option>
+          <option value="20">20</option>
+          <option value="24">24</option>
+          <option value="32">32</option>
+          <option value="48">48</option>
+        </select>
+      </label>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group">
+      <button id="btn-rotate-l" title="Rotate current page left" disabled>⟲</button>
+      <button id="btn-rotate-r" title="Rotate current page right" disabled>⟳</button>
+      <button id="btn-page-up" title="Move current page up" disabled>⬆</button>
+      <button id="btn-page-down" title="Move current page down" disabled>⬇</button>
+      <button id="btn-delete-page" title="Delete current page" disabled>🗑 Page</button>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group">
+      <button id="btn-zoom-out" title="Zoom out">−</button>
+      <span id="zoom-level">100%</span>
+      <button id="btn-zoom-in" title="Zoom in">+</button>
+    </div>
+    <div class="tb-spacer"></div>
+    <span id="status"></span>
+  </div>
+
+  <div id="main">
+    <div id="sidebar"></div>
+    <div id="viewer-wrap">
+      <div id="viewer">
+        <div id="empty-state">
+          <h1>QuickPDF Editor</h1>
+          <p>Open a PDF to get started, or merge several into one.</p>
+          <button id="btn-open-big">📂 Open a PDF</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="../../node_modules/pdf-lib/dist/pdf-lib.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

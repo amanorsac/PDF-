@@ -1,0 +1,7 @@
+node_modules/
+release/
+elog.txt
+elog-err.txt
+test.pdf
+save-test.pdf
+save-test.js
