@@ -117,6 +117,23 @@ ipcMain.handle('file:write', async (_evt, { filePath, bytes }) => {
   return filePath;
 });
 
+ipcMain.handle('dialog:openImage', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Insert image',
+    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }],
+    properties: ['openFile']
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  const filePath = result.filePaths[0];
+  const fmt = filePath.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
+  return { filePath, fmt, dataB64: fs.readFileSync(filePath).toString('base64') };
+});
+
+ipcMain.handle('file:stat', async (_evt, filePath) => {
+  const st = fs.statSync(filePath);
+  return { sizeBytes: st.size, modified: st.mtimeMs, created: st.birthtimeMs };
+});
+
 ipcMain.handle('file:read', async (_evt, filePath) => {
   const data = fs.readFileSync(filePath);
   return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);

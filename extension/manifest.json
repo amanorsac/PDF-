@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "QuickPDF Editor",
+  "version": "1.0.0",
+  "description": "View, annotate, fill forms, sign, organize and merge PDFs — entirely in your browser. No uploads.",
+  "action": {
+    "default_title": "Open QuickPDF Editor"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "128": "icon128.png"
+  }
+}
